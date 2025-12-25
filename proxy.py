@@ -3,7 +3,7 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
@@ -32,6 +32,7 @@ async def log_usage(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    cached_tokens: int = 0,
 ):
     """Log token usage to database."""
     usage_log = UsageLog(
@@ -39,6 +40,7 @@ async def log_usage(
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
     )
     db.add(usage_log)
     await db.commit()
@@ -74,12 +76,18 @@ async def chat_completions(
         result = response.json()
 
         usage = result.get("usage", {})
+        cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
         await log_usage(
             db, user, request.model,
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
+            cached_tokens,
         )
-        return JSONResponse(content=result, status_code=response.status_code)
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+        )
 
     if semaphore:
         async with semaphore:
@@ -110,12 +118,18 @@ async def completions(
         result = response.json()
 
         usage = result.get("usage", {})
+        cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
         await log_usage(
             db, user, request.model,
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
+            cached_tokens,
         )
-        return JSONResponse(content=result, status_code=response.status_code)
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+        )
 
     if semaphore:
         async with semaphore:
@@ -130,4 +144,8 @@ async def list_models(user: User = Depends(get_current_user)):
         url = f"{settings.openai_backend_url.rstrip('/')}/v1/models"
         headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
         response = await client.get(url, headers=headers)
-        return JSONResponse(content=response.json(), status_code=response.status_code)
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+        )

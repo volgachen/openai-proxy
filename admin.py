@@ -79,6 +79,7 @@ async def list_costs(
             User.username,
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("total_input_tokens"),
             func.coalesce(func.sum(UsageLog.output_tokens), 0).label("total_output_tokens"),
+            func.coalesce(func.sum(UsageLog.cached_tokens), 0).label("total_cached_tokens"),
             func.count(UsageLog.id).label("total_requests"),
         )
         .outerjoin(UsageLog, User.id == UsageLog.user_id)
@@ -95,6 +96,7 @@ async def list_costs(
                 username=row.username,
                 total_input_tokens=row.total_input_tokens,
                 total_output_tokens=row.total_output_tokens,
+                total_cached_tokens=row.total_cached_tokens,
                 total_requests=row.total_requests,
             )
             for row in rows

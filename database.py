@@ -30,6 +30,7 @@ class UsageLog(Base):
     model = Column(String, nullable=False)
     input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
+    cached_tokens = Column(Integer, default=0)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="usage_logs")

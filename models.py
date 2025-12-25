@@ -29,6 +29,7 @@ class UserCost(BaseModel):
     username: str
     total_input_tokens: int
     total_output_tokens: int
+    total_cached_tokens: int
     total_requests: int
 
 
