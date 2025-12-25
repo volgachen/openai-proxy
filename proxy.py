@@ -1,10 +1,9 @@
-import json
-from typing import Any, AsyncGenerator
+import asyncio
+from typing import Optional
 
 import httpx
-import tiktoken
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
@@ -15,28 +14,16 @@ from models import ChatCompletionRequest, CompletionRequest
 router = APIRouter(prefix="/v1", tags=["OpenAI Compatible"])
 settings = get_settings()
 
-
-def count_tokens(text: str, model: str = "gpt-4") -> int:
-    """Count tokens in text using tiktoken."""
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        encoding = tiktoken.get_encoding("cl100k_base")
-    return len(encoding.encode(text))
+# Global semaphore for concurrency limiting
+_semaphore: Optional[asyncio.Semaphore] = None
 
 
-def count_message_tokens(messages: list, model: str = "gpt-4") -> int:
-    """Count tokens in chat messages."""
-    total = 0
-    for msg in messages:
-        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
-        if isinstance(content, str):
-            total += count_tokens(content, model)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    total += count_tokens(part.get("text", ""), model)
-    return total
+def get_semaphore() -> Optional[asyncio.Semaphore]:
+    """Get or create the global semaphore."""
+    global _semaphore
+    if _semaphore is None and settings.max_concurrent_requests > 0:
+        _semaphore = asyncio.Semaphore(settings.max_concurrent_requests)
+    return _semaphore
 
 
 async def log_usage(
@@ -57,58 +44,10 @@ async def log_usage(
     await db.commit()
 
 
-async def proxy_request(
-    method: str,
-    path: str,
-    body: dict,
-    stream: bool = False,
-) -> httpx.Response:
-    """Proxy request to OpenAI backend."""
-    url = f"{settings.openai_backend_url.rstrip('/')}{path}"
-    headers = {
-        "Authorization": f"Bearer {settings.openai_api_key}",
-        "Content-Type": "application/json",
-    }
-
+async def proxy_request(url: str, headers: dict, body: dict) -> httpx.Response:
+    """Send request to backend."""
     async with httpx.AsyncClient(timeout=120.0) as client:
-        if stream:
-            return await client.stream(method, url, json=body, headers=headers)
-        return await client.request(method, url, json=body, headers=headers)
-
-
-async def stream_response(
-    response: httpx.Response,
-    db: AsyncSession,
-    user: User,
-    model: str,
-    input_tokens: int,
-) -> AsyncGenerator[bytes, None]:
-    """Stream response and count output tokens."""
-    output_text = ""
-
-    async with response:
-        async for line in response.aiter_lines():
-            if line.startswith("data: "):
-                data = line[6:]
-                if data.strip() == "[DONE]":
-                    yield line.encode() + b"\n\n"
-                    break
-                try:
-                    chunk = json.loads(data)
-                    choices = chunk.get("choices", [])
-                    for choice in choices:
-                        delta = choice.get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            output_text += content
-                except json.JSONDecodeError:
-                    pass
-                yield line.encode() + b"\n\n"
-            elif line:
-                yield line.encode() + b"\n"
-
-    output_tokens = count_tokens(output_text, model)
-    await log_usage(db, user, model, input_tokens, output_tokens)
+        return await client.post(url, json=body, headers=headers)
 
 
 @router.post("/chat/completions")
@@ -118,45 +57,34 @@ async def chat_completions(
     db: AsyncSession = Depends(get_db),
 ):
     """Proxy chat completions to OpenAI."""
-    model = request.model
-    messages = [m.model_dump(exclude_none=True) for m in request.messages]
-    input_tokens = count_message_tokens(messages, model)
+    semaphore = get_semaphore()
 
     body = request.model_dump(exclude_none=True)
-    body["messages"] = messages
+    body["messages"] = [m.model_dump(exclude_none=True) for m in request.messages]
+    body["stream"] = False
 
-    if request.stream:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            url = f"{settings.openai_backend_url.rstrip('/')}/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            }
-            response = await client.send(
-                client.build_request("POST", url, json=body, headers=headers),
-                stream=True,
-            )
-            return StreamingResponse(
-                stream_response(response, db, user, model, input_tokens),
-                media_type="text/event-stream",
-            )
-    else:
-        response = await proxy_request("POST", "/v1/chat/completions", body)
+    url = f"{settings.openai_backend_url.rstrip('/')}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.openai_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async def do_request():
+        response = await proxy_request(url, headers, body)
         result = response.json()
 
-        output_tokens = 0
-        if "usage" in result:
-            output_tokens = result["usage"].get("completion_tokens", 0)
-            input_tokens = result["usage"].get("prompt_tokens", input_tokens)
-        else:
-            choices = result.get("choices", [])
-            for choice in choices:
-                content = choice.get("message", {}).get("content", "")
-                if content:
-                    output_tokens += count_tokens(content, model)
-
-        await log_usage(db, user, model, input_tokens, output_tokens)
+        usage = result.get("usage", {})
+        await log_usage(
+            db, user, request.model,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
         return JSONResponse(content=result, status_code=response.status_code)
+
+    if semaphore:
+        async with semaphore:
+            return await do_request()
+    return await do_request()
 
 
 @router.post("/completions")
@@ -166,56 +94,37 @@ async def completions(
     db: AsyncSession = Depends(get_db),
 ):
     """Proxy legacy completions to OpenAI."""
-    model = request.model
-    prompt = request.prompt
-
-    if isinstance(prompt, str):
-        input_tokens = count_tokens(prompt, model)
-    elif isinstance(prompt, list):
-        input_tokens = sum(count_tokens(p, model) if isinstance(p, str) else 0 for p in prompt)
-    else:
-        input_tokens = 0
+    semaphore = get_semaphore()
 
     body = request.model_dump(exclude_none=True)
+    body["stream"] = False
 
-    if request.stream:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            url = f"{settings.openai_backend_url.rstrip('/')}/v1/completions"
-            headers = {
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            }
-            response = await client.send(
-                client.build_request("POST", url, json=body, headers=headers),
-                stream=True,
-            )
-            return StreamingResponse(
-                stream_response(response, db, user, model, input_tokens),
-                media_type="text/event-stream",
-            )
-    else:
-        response = await proxy_request("POST", "/v1/completions", body)
+    url = f"{settings.openai_backend_url.rstrip('/')}/v1/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.openai_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async def do_request():
+        response = await proxy_request(url, headers, body)
         result = response.json()
 
-        output_tokens = 0
-        if "usage" in result:
-            output_tokens = result["usage"].get("completion_tokens", 0)
-            input_tokens = result["usage"].get("prompt_tokens", input_tokens)
-        else:
-            choices = result.get("choices", [])
-            for choice in choices:
-                text = choice.get("text", "")
-                if text:
-                    output_tokens += count_tokens(text, model)
-
-        await log_usage(db, user, model, input_tokens, output_tokens)
+        usage = result.get("usage", {})
+        await log_usage(
+            db, user, request.model,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
         return JSONResponse(content=result, status_code=response.status_code)
+
+    if semaphore:
+        async with semaphore:
+            return await do_request()
+    return await do_request()
 
 
 @router.get("/models")
-async def list_models(
-    user: User = Depends(get_current_user),
-):
+async def list_models(user: User = Depends(get_current_user)):
     """Proxy models list to OpenAI."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{settings.openai_backend_url.rstrip('/')}/v1/models"

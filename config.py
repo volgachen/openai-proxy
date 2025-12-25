@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # Concurrency limit (0 = unlimited)
+    max_concurrent_requests: int = 500
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
