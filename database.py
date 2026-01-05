@@ -1,8 +1,7 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Float
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
-from sqlalchemy.pool import NullPool
 
 from config import get_settings
 
@@ -39,8 +38,25 @@ class UsageLog(Base):
 
 # Database engine and session
 settings = get_settings()
-engine = create_async_engine(settings.database_url, echo=False, poolclass=NullPool)
+pool_size = min(settings.max_concurrent_requests, 100)
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    pool_size=pool_size,
+    max_overflow=pool_size,
+    pool_timeout=60,
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def set_sqlite_pragma(dbapi_conn, _):
+    """Enable WAL mode for better concurrent access."""
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA wal_autocheckpoint=100")  # Checkpoint every 100 pages (~400KB)
+    cursor.close()
 
 
 async def init_db():
