@@ -4,11 +4,10 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import get_current_user
 from config import get_settings
-from database import get_db, User, UsageLog
+from database import async_session, User, UsageLog
 from models import ChatCompletionRequest, CompletionRequest
 
 router = APIRouter(prefix="/v1", tags=["OpenAI Compatible"])
@@ -27,28 +26,28 @@ def get_semaphore() -> Optional[asyncio.Semaphore]:
 
 
 async def log_usage(
-    db: AsyncSession,
-    user: User,
+    user_id: int,
     model: str,
     input_tokens: int,
     output_tokens: int,
     cached_tokens: int = 0,
 ):
-    """Log token usage to database."""
-    usage_log = UsageLog(
-        user_id=user.id,
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cached_tokens=cached_tokens,
-    )
-    db.add(usage_log)
-    await db.commit()
+    """Log token usage to database with short-lived session."""
+    async with async_session() as db:
+        usage_log = UsageLog(
+            user_id=user_id,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+        )
+        db.add(usage_log)
+        await db.commit()
 
 
 async def proxy_request(url: str, headers: dict, body: dict) -> httpx.Response:
     """Send request to backend."""
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=settings.request_timeout) as client:
         return await client.post(url, json=body, headers=headers)
 
 
@@ -56,10 +55,10 @@ async def proxy_request(url: str, headers: dict, body: dict) -> httpx.Response:
 async def chat_completions(
     request: ChatCompletionRequest,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     """Proxy chat completions to OpenAI."""
     semaphore = get_semaphore()
+    user_id = user.id  # Capture before session closes
 
     body = request.model_dump(exclude_none=True)
     body["messages"] = [m.model_dump(exclude_none=True) for m in request.messages]
@@ -78,7 +77,7 @@ async def chat_completions(
         usage = result.get("usage", {})
         cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
         await log_usage(
-            db, user, request.model,
+            user_id, request.model,
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
             cached_tokens,
@@ -99,10 +98,10 @@ async def chat_completions(
 async def completions(
     request: CompletionRequest,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     """Proxy legacy completions to OpenAI."""
     semaphore = get_semaphore()
+    user_id = user.id  # Capture before session closes
 
     body = request.model_dump(exclude_none=True)
     body["stream"] = False
@@ -120,7 +119,7 @@ async def completions(
         usage = result.get("usage", {})
         cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
         await log_usage(
-            db, user, request.model,
+            user_id, request.model,
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
             cached_tokens,
@@ -138,7 +137,7 @@ async def completions(
 
 
 @router.get("/models")
-async def list_models(user: User = Depends(get_current_user)):
+async def list_models(_: User = Depends(get_current_user)):
     """Proxy models list to OpenAI."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{settings.openai_backend_url.rstrip('/')}/v1/models"

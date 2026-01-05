@@ -38,7 +38,7 @@ class UsageLog(Base):
 
 # Database engine and session
 settings = get_settings()
-pool_size = min(settings.max_concurrent_requests, 100)
+pool_size = 20  # Short-lived sessions, don't need large pool
 engine = create_async_engine(
     settings.database_url,
     echo=False,

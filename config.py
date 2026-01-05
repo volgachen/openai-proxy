@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # Concurrency limit (0 = unlimited)
     max_concurrent_requests: int = 500
 
+    # Request timeout in seconds for LLM API calls
+    request_timeout: int = 300
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
