@@ -2,6 +2,7 @@ from datetime import datetime
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Float
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.pool import NullPool
 
 from config import get_settings
 
@@ -38,7 +39,7 @@ class UsageLog(Base):
 
 # Database engine and session
 settings = get_settings()
-engine = create_async_engine(settings.database_url, echo=False)
+engine = create_async_engine(settings.database_url, echo=False, poolclass=NullPool)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
