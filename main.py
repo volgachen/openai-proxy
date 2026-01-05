@@ -1,18 +1,22 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlalchemy import text
 
 from admin import router as admin_router
 from config import get_settings
-from database import init_db
+from database import init_db, engine
 from proxy import router as proxy_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database on startup."""
+    """Initialize database on startup, checkpoint WAL on shutdown."""
     await init_db()
     yield
+    # Checkpoint WAL to main database on graceful shutdown
+    async with engine.begin() as conn:
+        await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
 
 
 app = FastAPI(
