@@ -1,0 +1,5 @@
+{
+    "gpt-4": "gpt-4-turbo",
+    "gpt-4o": "gpt-4o-2024-08-06",
+    "claude-3": "claude-3-5-sonnet-20241022"
+}

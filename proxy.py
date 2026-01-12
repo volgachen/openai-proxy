@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
 from auth import get_current_user
-from config import get_settings
+from config import get_settings, get_model_mapping
 from database import async_session, User, UsageLog
 from models import ChatCompletionRequest, CompletionRequest
 
@@ -45,6 +45,12 @@ async def log_usage(
         await db.commit()
 
 
+def map_model_name(model: str) -> str:
+    """Map model name using config, return original if no mapping exists."""
+    mapping = get_model_mapping()
+    return mapping.get(model, model)
+
+
 async def proxy_request(url: str, headers: dict, body: dict) -> httpx.Response:
     """Send request to backend."""
     async with httpx.AsyncClient(timeout=settings.request_timeout) as client:
@@ -59,8 +65,11 @@ async def chat_completions(
     """Proxy chat completions to OpenAI."""
     semaphore = get_semaphore()
     user_id = user.id  # Capture before session closes
+    original_model = request.model
+    backend_model = map_model_name(original_model)
 
     body = request.model_dump(exclude_none=True)
+    body["model"] = backend_model
     body["messages"] = [m.model_dump(exclude_none=True) for m in request.messages]
     body["stream"] = False
 
@@ -77,7 +86,7 @@ async def chat_completions(
         usage = result.get("usage", {})
         cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
         await log_usage(
-            user_id, request.model,
+            user_id, backend_model,  # Log with mapped model name
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
             cached_tokens,
@@ -102,8 +111,11 @@ async def completions(
     """Proxy legacy completions to OpenAI."""
     semaphore = get_semaphore()
     user_id = user.id  # Capture before session closes
+    original_model = request.model
+    backend_model = map_model_name(original_model)
 
     body = request.model_dump(exclude_none=True)
+    body["model"] = backend_model
     body["stream"] = False
 
     url = f"{settings.openai_backend_url.rstrip('/')}/v1/completions"
@@ -119,7 +131,7 @@ async def completions(
         usage = result.get("usage", {})
         cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
         await log_usage(
-            user_id, request.model,
+            user_id, backend_model,  # Log with mapped model name
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
             cached_tokens,
