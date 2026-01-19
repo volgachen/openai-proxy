@@ -7,7 +7,7 @@ from fastapi.responses import Response
 
 from auth import get_current_user
 from config import get_settings, get_model_mapping
-from database import async_session, User, UsageLog
+from database import async_session, User, UsageLog, ErrorLog
 from models import ChatCompletionRequest, CompletionRequest
 
 router = APIRouter(prefix="/v1", tags=["OpenAI Compatible"])
@@ -42,6 +42,26 @@ async def log_usage(
             cached_tokens=cached_tokens,
         )
         db.add(usage_log)
+        await db.commit()
+
+
+async def log_error(
+    user_id: int,
+    error_type: str,
+    model: str = None,
+    error_message: str = None,
+    status_code: int = None,
+):
+    """Log error to database with short-lived session."""
+    async with async_session() as db:
+        error_log = ErrorLog(
+            user_id=user_id,
+            model=model,
+            error_type=error_type,
+            error_message=error_message,
+            status_code=status_code,
+        )
+        db.add(error_log)
         await db.commit()
 
 
@@ -80,8 +100,36 @@ async def chat_completions(
     }
 
     async def do_request():
-        response = await proxy_request(url, headers, body)
-        result = response.json()
+        try:
+            response = await proxy_request(url, headers, body)
+        except httpx.TimeoutException as e:
+            await log_error(user_id, "timeout", backend_model, str(e))
+            raise
+        except httpx.RequestError as e:
+            await log_error(user_id, "request_error", backend_model, str(e))
+            raise
+
+        # Log error if backend returned error status
+        if response.status_code >= 400:
+            await log_error(
+                user_id, "backend_error", backend_model,
+                response.text[:500], response.status_code
+            )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+            )
+
+        try:
+            result = response.json()
+        except Exception as e:
+            await log_error(user_id, "parse_error", backend_model, str(e), response.status_code)
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+            )
 
         usage = result.get("usage", {})
         cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
@@ -125,8 +173,36 @@ async def completions(
     }
 
     async def do_request():
-        response = await proxy_request(url, headers, body)
-        result = response.json()
+        try:
+            response = await proxy_request(url, headers, body)
+        except httpx.TimeoutException as e:
+            await log_error(user_id, "timeout", backend_model, str(e))
+            raise
+        except httpx.RequestError as e:
+            await log_error(user_id, "request_error", backend_model, str(e))
+            raise
+
+        # Log error if backend returned error status
+        if response.status_code >= 400:
+            await log_error(
+                user_id, "backend_error", backend_model,
+                response.text[:500], response.status_code
+            )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+            )
+
+        try:
+            result = response.json()
+        except Exception as e:
+            await log_error(user_id, "parse_error", backend_model, str(e), response.status_code)
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers={"Content-Type": response.headers.get("Content-Type", "application/json")},
+            )
 
         usage = result.get("usage", {})
         cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)

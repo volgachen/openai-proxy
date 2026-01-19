@@ -36,6 +36,20 @@ class UsageLog(Base):
     user = relationship("User", back_populates="usage_logs")
 
 
+class ErrorLog(Base):
+    __tablename__ = "error_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    model = Column(String, nullable=True)
+    error_type = Column(String, nullable=False)  # e.g., "timeout", "backend_error", "parse_error"
+    error_message = Column(String, nullable=True)
+    status_code = Column(Integer, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
 # Database engine and session
 settings = get_settings()
 pool_size = 20  # Short-lived sessions, don't need large pool
