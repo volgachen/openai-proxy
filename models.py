@@ -25,12 +25,21 @@ class ListUsersResponse(BaseModel):
     users: List[UserInfo]
 
 
+class ModelCost(BaseModel):
+    model: str
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cached_tokens: int
+    total_requests: int
+
+
 class UserCost(BaseModel):
     username: str
     total_input_tokens: int
     total_output_tokens: int
     total_cached_tokens: int
     total_requests: int
+    model_costs: Optional[List[ModelCost]] = None
 
 
 class ListCostsResponse(BaseModel):

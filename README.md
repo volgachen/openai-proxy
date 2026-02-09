@@ -97,6 +97,21 @@ Get token usage statistics per user.
 curl http://localhost:8000/admin/list_costs
 ```
 
+Optional query parameters:
+- `last_hours` - Convenience window in hours (cannot be combined with `start_time`/`end_time`)
+- `start_time` - ISO 8601 timestamp (inclusive)
+- `end_time` - ISO 8601 timestamp (inclusive)
+- `by_model` - Include per-model breakdown in each user entry
+
+Examples:
+```bash
+# Last 24 hours with per-model breakdown
+curl "http://localhost:8000/admin/list_costs?last_hours=24&by_model=true"
+
+# Explicit time range
+curl "http://localhost:8000/admin/list_costs?start_time=2026-02-08T00:00:00Z&end_time=2026-02-09T00:00:00Z"
+```
+
 Response:
 ```json
 {
@@ -106,7 +121,16 @@ Response:
       "total_input_tokens": 15000,
       "total_output_tokens": 5000,
       "total_cached_tokens": 12000,
-      "total_requests": 100
+      "total_requests": 100,
+      "model_costs": [
+        {
+          "model": "gpt-4.1-mini",
+          "total_input_tokens": 12000,
+          "total_output_tokens": 4000,
+          "total_cached_tokens": 9000,
+          "total_requests": 80
+        }
+      ]
     }
   ]
 }
