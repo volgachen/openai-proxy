@@ -103,10 +103,12 @@ Optional query parameters:
 - `end_time` - ISO 8601 timestamp (inclusive)
 - `by_model` - Include per-model breakdown in each user entry
 
+You should better run it with `... | python -m json.tool`
+
 Examples:
 ```bash
 # Last 24 hours with per-model breakdown
-curl "http://localhost:8000/admin/list_costs?last_hours=24&by_model=true"
+curl "http://localhost:8000/admin/list_costs?last_hours=24&by_model=true" | python -m json.tool
 
 # Explicit time range
 curl "http://localhost:8000/admin/list_costs?start_time=2026-02-08T00:00:00Z&end_time=2026-02-09T00:00:00Z"
